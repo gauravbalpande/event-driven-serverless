@@ -130,7 +130,7 @@ jobs:
           terraform_version: ${{ env.TERRAFORM_VERSION }}
 
       - name: Terraform Init
-        run: terraform init
+        run: terraform init -backend=false
 
       - name: Terraform Plan
         id: plan
@@ -141,10 +141,12 @@ jobs:
         continue-on-error: true
 
       - name: Save Terraform Plan
+        if: always() && steps.plan.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: terraform-plan
           path: tfplan
+          if-no-files-found: warn
 
       - name: Comment PR with Plan
         if: github.event_name == 'pull_request'
@@ -197,18 +199,26 @@ jobs:
           terraform_version: ${{ env.TERRAFORM_VERSION }}
 
       - name: Terraform Init
-        run: terraform init
+        run: terraform init -backend=false
 
       - name: Download Terraform Plan
         uses: actions/download-artifact@v4
         with:
           name: terraform-plan
+        continue-on-error: true
 
       - name: Terraform Apply
         run: |
-          terraform apply -auto-approve \
-                         -var="notification_email=${{ secrets.NOTIFICATION_EMAIL }}" \
-                         -var="environment=prod"
+          if [ -f tfplan ]; then
+            echo "Using saved plan file..."
+            terraform apply tfplan
+          else
+            echo "Plan file not found, generating new plan and applying..."
+            terraform plan -var="notification_email=${{ secrets.NOTIFICATION_EMAIL }}" \
+                           -var="environment=prod" \
+                           -out=tfplan
+            terraform apply tfplan
+          fi
 
       - name: Get Terraform Outputs
         id: outputs
