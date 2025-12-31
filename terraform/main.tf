@@ -15,13 +15,17 @@ terraform {
   }
 
   # Backend configuration for state management
-  backend "s3" {
-    bucket         = "terraform-state-megaminds-project"
-    key            = "event-pipeline/terraform.tfstate"
-    region         = "us-east-1"
-    encrypt        = true
-    dynamodb_table = "terraform-state-lock"
-  }
+  # Using local state for development. To use remote S3 backend:
+  # 1. Create S3 bucket: aws s3 mb s3://terraform-state-megaminds-project --region us-east-1
+  # 2. Create DynamoDB table: aws dynamodb create-table --table-name terraform-state-lock --attribute-definitions AttributeName=LockID,AttributeType=S --key-schema AttributeName=LockID,KeyType=HASH --billing-mode PAY_PER_REQUEST --region us-east-1
+  # 3. Uncomment the backend block below
+  # backend "s3" {
+  #   bucket         = "terraform-state-megaminds-project"
+  #   key            = "event-pipeline/terraform.tfstate"
+  #   region         = "us-east-1"
+  #   encrypt        = true
+  #   use_lockfile   = true  # Replaces deprecated dynamodb_table parameter
+  # }
 }
 
 provider "aws" {
@@ -37,6 +41,9 @@ provider "aws" {
   }
 }
 
+# Get AWS account ID for unique bucket naming
+data "aws_caller_identity" "current" {}
+
 # Local variables
 locals {
   project_name = "event-pipeline"
@@ -44,6 +51,8 @@ locals {
     Project     = "EventDrivenPipeline"
     Environment = var.environment
   }
+  # Use account ID to ensure bucket name uniqueness
+  account_id = data.aws_caller_identity.current.account_id
 }
 
 # S3 Bucket for Raw Data
@@ -87,7 +96,7 @@ resource "aws_s3_bucket_versioning" "processed_data" {
 
 # S3 Bucket for Reports
 resource "aws_s3_bucket" "reports" {
-  bucket = "${local.project_name}-reports-${var.environment}"
+  bucket = "${local.project_name}-reports-${var.environment}-${substr(local.account_id, length(local.account_id) - 4, 4)}"
 }
 
 resource "aws_s3_bucket_lifecycle_configuration" "reports_lifecycle" {
@@ -96,6 +105,10 @@ resource "aws_s3_bucket_lifecycle_configuration" "reports_lifecycle" {
   rule {
     id     = "archive-old-reports"
     status = "Enabled"
+
+    filter {
+      prefix = ""
+    }
 
     transition {
       days          = 90
@@ -259,7 +272,7 @@ resource "aws_iam_role_policy" "lambda_processor_policy" {
 # Package Lambda function code
 data "archive_file" "lambda_processor_zip" {
   type        = "zip"
-  source_dir  = "${path.module}/lambda/processor"
+  source_dir  = "${path.module}/../lambda/processor"
   output_path = "${path.module}/builds/processor.zip"
 }
 
@@ -282,7 +295,8 @@ resource "aws_lambda_function" "data_processor" {
     }
   }
 
-  reserved_concurrent_executions = 10
+  # Removed reserved_concurrent_executions to avoid account limit issues
+  # The function will use unreserved concurrency instead
 
   tracing_config {
     mode = "Active"
@@ -374,7 +388,7 @@ resource "aws_iam_role_policy" "lambda_reporter_policy" {
 # Package Lambda report generator code
 data "archive_file" "lambda_reporter_zip" {
   type        = "zip"
-  source_dir  = "${path.module}/lambda/reporter"
+  source_dir  = "${path.module}/../lambda/reporter"
   output_path = "${path.module}/builds/reporter.zip"
 }
 
